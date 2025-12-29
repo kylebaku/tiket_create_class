@@ -9,10 +9,14 @@ import pandas as pd
 import datetime as tm
 import schedule
 import time
+import pymysql
+from ke_list import ke_lists, branch
+import re
+from create_tt import add
 
 # SQL-запрос (без f-строки, так как нет динамических подстановок)
 SQL_SELECT = """
-select * from prn_triggers pt where problem_name = 'Host Unavailable' order by dtcreate desc
+select * from prn_triggers pt where problem_name = 'Host Unavailable' and contact like ('%A%')order by dtcreate desc
 """
 
 
@@ -94,15 +98,81 @@ connct_zbx = DBConnector(
 
 )
 
+def query_incert_tt(prob_name, host, model, sn, ip, contact, remedy_tt, dat):
+    connection = psycopg2.connect(user=cn.LOGIN_ZBX, password=cn.PASS_ZBX, host=cn.SERVER_ZBX, database=cn.DB_ZBX, port="5432")
+    cursor = connection.cursor()
+    # Курсор для выполнения операций с базой данныхselect * from checklist_ticket
+    query = f"""INSERT INTO print_tt (hostname,contact,problem_name,serial_n,model,ip_addr,remedy_tt,dtcreate)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"""
+    # WHERE   request_id = % s and problem = % s
+    cursor.execute(query, (host, contact, prob_name, sn, model, ip, remedy_tt, dat))
+    connection.commit()
+    connection.close()
+
 
 # Выполняем запрос и печатаем результат
 result_df = connct_zbx.connect()
 
+class DBReport:
+    """
+    Класс обработки датафремйма данными с данными по тригерами принтеров
+    и формирования ТТ
+    """
 
-def change_result(df):
-    for _, i in df.iterrows():
-        print(i)
+    def __init__(self, result_df):
+        self.df = result_df
 
+    def read_df(self):
+        """Метод построчной обработки датафрейма"""
+        dtt = self.df
+        rows = int(dtt.shape[0])
+        # присваем кол-во записей в датафрейме
+        for number in range(rows):
+            dat = dtt.iloc[number][0]  # дата запроса выгрузки тригера
+            prob_name = dtt.iloc[number][1]  # наименование тригера
+            host = dtt.iloc[number][2]  # имя принтера
+            model = dtt.iloc[number][3]  # модель принтера
+            sn = dtt.iloc[number][4]  # sn принтера
+            ip = dtt.iloc[number][5]  # ip адрес принтера
+            contact = dtt.iloc[number][6]  # зашифрованный адрес устройства
+            # сокращенный формат филиала "NN"
+            fil = re.split("_|\.", contact)[1]
+            adm = re.split("_|\.", contact)[2]  # код точки офиса
+            try:
+                result = ke_lists(adm)
+                if len(result) != 4:
+                    print(f"Ошибка: ke_lists вернула {len(result)} значений для adm={adm}")
+                    continue
+                cod, adr, fili, rol = result
+                if 0 in (cod, adr, fili, rol):
+                    continue
+                br, rl = branch(fili, rol)
+
+           
+                print(f'data: {dat}\n'
+                  f'prob_name: {prob_name}\n'
+                  f'host: {host}\n'
+                  f'model: {model}\n'
+                  f'sn: {sn}\n'
+                  f'ip: {ip}\n'
+                  f'contact: {contact}\n'
+                  f'fil: {fil}\n'
+                  f'adm: {adm}\n'
+                  f'br: {br}\n'
+                  f'rl: {rl}\n'
+                  f'cod: {cod}\n'
+                  f'rol: {rol}\n'
+                  f'adr: {adr}\n')
+                remedy_tt = str(add(prob_name, host, model, sn, ip, contact, adr, br, rl))
+                # Формируем ТТ
+                query_incert_tt(prob_name,host, model,sn,ip,contact,remedy_tt,dat)
+                # Записываем данные в таблицу по номеру ТТ
+                print(remedy_tt)
+            except Exception as e:
+                print(f"Ошибка при обработке adm={adm}: {e}")
+                continue
+f = DBReport(result_df)
+print(f.read_df())
 
 
 # шедуллер в  проработку 
